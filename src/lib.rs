@@ -1,12 +1,15 @@
+use std::iter::Peekable;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenT {
     Literal(String),
     Number(f64),
-    Operator(Operator),
+    Comparator(Comparator),
     OpenParen,
     CloseParen,
     Dot,
     Match,
+    ConditionalOperator(ConditionalOperator)
 }
 
 #[derive(Debug, Clone)]
@@ -19,17 +22,32 @@ pub struct Token {
 pub enum ASTNode {
     Literal(String),
     Number(f64),
-    BinaryOp {
-        op: Operator,
+    Condition {
+        op: Comparator,
         left: Box<ASTNode>,
         right: Box<ASTNode>,
+    },
+    ConditionalOperator {
+        op: ConditionalOperator,
+        conditions: Vec<Box<ASTNode>>
     },
     Match(Box<ASTNode>),
     Unexpected
 }
 
+impl std::ops::Deref for ASTNode {
+    type Target = ASTNode;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            ASTNode::Match(inner) => &**inner,
+            _ => self,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Copy, Clone)]
-pub enum Operator {
+pub enum Comparator {
     GTE,
     GT,
     EQ,
@@ -38,12 +56,21 @@ pub enum Operator {
     LTE
 }
 
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum ConditionalOperator {
+    AND,
+    OR
+}
+
 #[derive(Debug)]
 pub enum ParseErrorT {
-    RHSofOperatorMustBeLiteralOrNumber,
+    RHSofComparatorMustBeLiteralOrNumber,
     NoDotBetweenFns,
-    MatchFnArgsMalformed,
-    UnexpectedToken(Token)
+    InvalidBinopStructure,
+    Unexpected, // TODO: add the token that is unexpected later
+    UnmatchedParenthesis,
+    MissingComparator, 
+    MissingOpenParen
 }
 
 #[derive(Debug)]
@@ -52,12 +79,12 @@ pub struct ParseError {
     pub cursor: usize
 }
 
-pub struct Crawler {
+pub struct MonGod {
     s: String,
     pub ast: Vec<ASTNode>,
 }
 
-impl Crawler {
+impl MonGod {
     pub fn new(s: String) -> Self {
         Self {
             s,
@@ -66,7 +93,7 @@ impl Crawler {
     }
 
     pub fn build(&mut self) -> Result<(), ParseError> {
-        let tokens = Crawler::tokenize(&self.s);
+        let tokens = MonGod::tokenize(&self.s);
         self.parse_tokens(&tokens)
     }
 
@@ -84,10 +111,10 @@ impl Crawler {
                     chars.next();
                     if chars.peek() == Some(&'=') {
                         chars.next();
-                        tokens.push(Token {ty: TokenT::Operator(Operator::GTE), idx});
+                        tokens.push(Token {ty: TokenT::Comparator(Comparator::GTE), idx});
                         idx+=2;
                     } else {
-                        tokens.push(Token {ty: TokenT::Operator(Operator::GT), idx});
+                        tokens.push(Token {ty: TokenT::Comparator(Comparator::GT), idx});
                         idx+=1;
                     }
                 }
@@ -95,10 +122,10 @@ impl Crawler {
                     chars.next();
                     if chars.peek() == Some(&'=') {
                         chars.next();
-                        tokens.push(Token {ty: TokenT::Operator(Operator::LTE), idx});
+                        tokens.push(Token {ty: TokenT::Comparator(Comparator::LTE), idx});
                         idx+=2;
                     } else {
-                        tokens.push(Token {ty: TokenT::Operator(Operator::LT), idx});
+                        tokens.push(Token {ty: TokenT::Comparator(Comparator::LT), idx});
                         idx+=1;
                     }
                 }
@@ -106,7 +133,7 @@ impl Crawler {
                     chars.next();
                     if chars.peek() == Some(&'=') {
                         chars.next();
-                        tokens.push(Token {ty: TokenT::Operator(Operator::EQ), idx});
+                        tokens.push(Token {ty: TokenT::Comparator(Comparator::EQ), idx});
                         idx+=2;
                     }
                 }
@@ -114,9 +141,19 @@ impl Crawler {
                     chars.next();
                     if chars.peek() == Some(&'=') {
                         chars.next();
-                        tokens.push(Token {ty: TokenT::Operator(Operator::NEQ), idx});
+                        tokens.push(Token {ty: TokenT::Comparator(Comparator::NEQ), idx});
                         idx+=2;
                     }
+                }
+                '&' => {
+                    tokens.push(Token {ty: TokenT::ConditionalOperator(ConditionalOperator::AND), idx});
+                    chars.next();
+                    idx+=1;
+                }
+                '|' => {
+                    tokens.push(Token {ty: TokenT::ConditionalOperator(ConditionalOperator::OR), idx});
+                    chars.next();
+                    idx+=1;
                 }
                 '(' => {
                     tokens.push(Token {ty: TokenT::OpenParen, idx});
@@ -172,54 +209,182 @@ impl Crawler {
                 }
             }
         }
+        println!("{:#?}", tokens);
         tokens
     }
 
-    pub fn parse_tokens(&mut self, tokens: &Vec<Token>) -> Result<(), ParseError>{
-        let mut nodes = Vec::new();
-        let mut iter = tokens.iter().peekable();
-        while let Some(t) = iter.next() {
-            match t.ty {
-                TokenT::Match => {
-                    iter.next(); // skip OpenParen
-                    if let (
-                        Some(Token{ty: TokenT::Literal(l1), idx: l1_idx}),
-                        Some(Token{ty: TokenT::Operator(op), idx: op_idx}),
-                        Some(Token{ty: next, idx: next_idx})
-                    ) = (iter.next(), iter.next(), iter.peek()) {
-                        let right = match next {
-                            TokenT::Literal(l2) => {
-                                iter.next();
-                                ASTNode::Literal(l2.clone())
-                            }
-                            TokenT::Number(n1) => {
-                                iter.next();
-                                ASTNode::Number(*n1)
-                            }
-                            _ => ASTNode::Unexpected,
-                        };
-                        if right == ASTNode::Unexpected {
-                            return Err(ParseError {ty: ParseErrorT::RHSofOperatorMustBeLiteralOrNumber, cursor: *next_idx});
-                        }
-                        nodes.push(ASTNode::Match(Box::new(ASTNode::BinaryOp {
-                            op: op.clone(),
-                            left: Box::new(ASTNode::Literal(l1.clone())),
-                            right: Box::new(right),
-                        })));
-                        iter.next(); // skip CloseParen
-                        let dot_check = iter.next();
-                        match dot_check {
-                            Some(Token {ty: TokenT::Dot, ..}) | None => {},
-                            other => return Err(ParseError {ty: ParseErrorT::NoDotBetweenFns, cursor: dot_check.unwrap().idx}),
-                        }
-                    } else {
-                        return Err(ParseError {ty: ParseErrorT::MatchFnArgsMalformed, cursor: t.idx});
+    fn parse_condition<I>(
+        iter: &mut Peekable<I>,
+    ) -> Result<ASTNode, ParseError>
+    where
+        I: Iterator<Item = Token>,
+    {
+        match iter.peek() {
+            Some(Token{ ty: TokenT::ConditionalOperator(_), ..}) => Self::parse_logical_op(iter),
+            Some(Token{ ty: TokenT::Literal(_), idx}) => {
+                let idx_clone = idx.clone();
+                if let Some(Token{ ty: TokenT::Literal(literal), ..}) = iter.next() {
+                    Ok(ASTNode::Literal(literal))
+                } else {
+                    println!("here1");
+                    Err(ParseError{ ty: ParseErrorT::Unexpected, cursor: idx_clone})
+                }
+            }
+            Some(Token{ ty: TokenT::Number(_), idx}) => {
+                let idx_clone = idx.clone();
+                if let Some(Token{ ty: TokenT::Number(num), ..}) = iter.next() {
+                    Ok(ASTNode::Number(num))
+                } else {
+                    Err(ParseError{ ty: ParseErrorT::Unexpected, cursor: idx_clone})
+                }
+            }
+            Some(Token{ ty: TokenT::OpenParen, idx}) => {
+                iter.next();
+                let left = Self::parse_condition(iter)?;
+                let op = match iter.next() {
+                    Some(Token{ ty: TokenT::Comparator(cmp), ..}) => cmp,
+                    _ => return Err(ParseError{ ty: ParseErrorT::MissingComparator, cursor: 0/*TODO*/}),
+                };
+                let right = Self::parse_condition(iter)?;
+    
+                match iter.next() {
+                    Some(Token { ty: TokenT::CloseParen, ..}) => Ok(ASTNode::Condition {
+                        op,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    }),
+                    _ => {
+                        println!("here3");
+                        return Err(ParseError{ ty: ParseErrorT::UnmatchedParenthesis, cursor: 0 /*TODO!!!*/});
                     }
                 }
-                _ => return Err(ParseError {ty: ParseErrorT::UnexpectedToken(t.clone()), cursor: t.idx}),
+            }
+    
+            _ => {
+                println!("here6");
+                return Err(ParseError{ ty: ParseErrorT::Unexpected, cursor: 0 /*TODO!!!*/});
+            }
+        }
+    }
+    
+    fn parse_logical_op<I>(
+        iter: &mut Peekable<I>,
+    ) -> Result<ASTNode, ParseError>
+    where
+        I: Iterator<Item = Token>,
+    {
+        let op = match iter.next() {
+            Some(Token {ty: TokenT::ConditionalOperator(cond_op), idx}) => cond_op,
+            _ => panic!("expected conditional operator")
+        };
+    
+        match iter.next() {
+            Some(Token {ty: TokenT::OpenParen, idx}) => {}
+            _ => return Err(ParseError {ty: ParseErrorT::MissingOpenParen, cursor: 0/*TODO*/}),
+        }
+        let mut conditions = Vec::new();
+
+        loop {
+            let condition = Self::parse_condition(iter)?;
+            conditions.push(Box::new(condition));
+            println!("{:?}", conditions);
+            match iter.peek() {
+                Some(Token{ ty: TokenT::CloseParen, ..}) => {
+                    // iter.next();
+                    break;
+                }
+                Some(Token{ ty: TokenT::OpenParen, ..}) => {
+                    continue;
+                }
+                _ => {
+                    println!("here5");
+                    return Err(ParseError {ty: ParseErrorT::Unexpected, cursor: 0 /*TODO:handle index of this properly*/});
+                }
+            }
+        }
+        Ok(ASTNode::ConditionalOperator {
+            op,
+            conditions,
+        })
+    }    
+
+    fn parse_match<I>(
+        iter: &mut Peekable<I>,
+    ) -> Result<ASTNode, ParseError>
+    where
+        I: Iterator<Item = Token>,
+    {
+        match iter.next() {
+            Some(Token{ ty: TokenT::Match, idx}) => {
+                match iter.next() {
+                    Some(Token{ ty: TokenT::OpenParen, ..}) => {}
+                    _ => return Err(ParseError{ ty: ParseErrorT::MissingOpenParen, cursor: idx}),
+                }
+    
+                let condition_chain = Self::parse_condition(iter)?;
+                println!("{:?}", condition_chain);
+                match iter.peek() {
+                    Some(Token{ ty: TokenT::CloseParen, idx}) => {
+                        iter.next();
+                        Ok(ASTNode::Match(Box::new(condition_chain)))
+                    }
+                    _ => {
+                        println!("here4");
+                        return Err(ParseError{ ty: ParseErrorT::UnmatchedParenthesis, cursor: 0/*TODO*/});
+                    }
+                }
+            }
+            _ => {
+                println!("here2");
+                return Err(ParseError{ ty: ParseErrorT::Unexpected, cursor: 0/*0*/});
+            }
+        }
+    }
+    
+
+    pub fn parse_tokens(&mut self, tokens: &Vec<Token>) -> Result<(), ParseError>{
+        let mut nodes = Vec::new();
+        let mut iter = tokens.iter().cloned().peekable();
+        while let Some(t) = iter.peek() {
+            match t.ty {
+                TokenT::Match => {
+                    match Self::parse_match(&mut iter){
+                        Ok(node) => nodes.push(node),
+                        Err(e) => return Err(e)
+                    };
+                }
+                _ => return Err(ParseError {ty: ParseErrorT::Unexpected, cursor: t.idx}),
             }
         }
         self.ast = nodes;
         Ok(())
+    }
+
+    pub fn ast2mql(&self) -> String {
+        let mut s = String::from("db.collection.aggregate{[");
+        for node in self.ast.iter() {
+            if let ASTNode::Match(inner) = node {
+                if let ASTNode::Condition { op, left, right } = &**inner {
+                    if let (ASTNode::Literal(left), ASTNode::Literal(right)) = (&**left, &**right) {
+                        let op_str = match op {
+                            Comparator::GTE => "$gte",
+                            Comparator::GT => "$gt",
+                            Comparator::EQ => "$eq",
+                            Comparator::NEQ => "$neq",
+                            Comparator::LT => "$lt",
+                            Comparator::LTE => "$lte",
+                        };
+                        s.push_str(&format!(
+                            "{{ $match: {{ {}: {{ {}: {} }} }} }},",
+                            left, op_str, right
+                        ));
+                    }
+                }
+            } else {
+                panic!("Unexpected node type!");
+            }
+        }
+        s.push_str("]}");
+        s
     }
 }

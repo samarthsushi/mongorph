@@ -1,4 +1,4 @@
-use mongorph::{Crawler, ParseError};
+use mongorph::{MonGod, ParseError};
 
 fn fmt_err(s: &str, e: ParseError) -> String {
     let start = e.cursor;
@@ -32,10 +32,12 @@ fn fmt_err(s: &str, e: ParseError) -> String {
 }
 
 fn main() {
-    let s = String::from("match(branch == CSE)match(branch == CSE)");
-    let mut crawler = Crawler::new(s.clone());
-    match crawler.build() {
-        Ok(_) => println!("AST: {:?}", crawler.ast),
+    let s = String::from("match(|((branch == ECE)(&((branch == CSE)(branch == AIML))))");
+    let mut m = MonGod::new(s.clone());
+    match m.build() {
+        Ok(_) => println!("AST: {:?}", m.ast),
         Err(e) => println!("{}", fmt_err(&s, e))
     };
+    // let mql = m.ast2mql();
+    // println!("{}", mql);
 }
