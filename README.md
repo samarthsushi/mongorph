@@ -7,6 +7,6 @@ i hate mql so im trying to create a way to write it in a more readable way
 - [ ] generate mql from ast
 - [x] single conditions
 - [x] and/or for having multiple conditions
-- [ ] nested conditions
+- [x] nested conditions
 - [ ] group()
 - [ ] create a count() function
