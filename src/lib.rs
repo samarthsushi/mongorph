@@ -1,4 +1,6 @@
 use std::iter::Peekable;
+use itertools::peek_nth;
+use itertools::PeekNth;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenT {
@@ -70,7 +72,8 @@ pub enum ParseErrorT {
     Unexpected, // TODO: add the token that is unexpected later
     UnmatchedParenthesis,
     MissingComparator, 
-    MissingOpenParen
+    MissingOpenParen,
+    EndOfTokenStream
 }
 
 #[derive(Debug)]
@@ -214,13 +217,18 @@ impl MonGod {
     }
 
     fn parse_condition<I>(
-        iter: &mut Peekable<I>,
+        iter: &mut PeekNth<I>,
     ) -> Result<ASTNode, ParseError>
     where
         I: Iterator<Item = Token>,
     {
         match iter.peek() {
-            Some(Token{ ty: TokenT::ConditionalOperator(_), ..}) => Self::parse_logical_op(iter),
+            Some(Token{ ty: TokenT::ConditionalOperator(_), ..}) => {
+                println!("entering a conditional operator (AND/OR)");
+                let conditional_operation = Self::parse_logical_op(iter);
+                println!("log:conditional_operation: {:?}", conditional_operation);
+                conditional_operation
+            }
             Some(Token{ ty: TokenT::Literal(_), idx}) => {
                 let idx_clone = idx.clone();
                 if let Some(Token{ ty: TokenT::Literal(literal), ..}) = iter.next() {
@@ -239,23 +247,36 @@ impl MonGod {
                 }
             }
             Some(Token{ ty: TokenT::OpenParen, idx}) => {
+                println!("parsing inside brackets");
                 iter.next();
+                println!("entering leftside of condition");
                 let left = Self::parse_condition(iter)?;
+                println!("log:left: {:?}", left);
                 let op = match iter.next() {
                     Some(Token{ ty: TokenT::Comparator(cmp), ..}) => cmp,
-                    _ => return Err(ParseError{ ty: ParseErrorT::MissingComparator, cursor: 0/*TODO*/}),
+                    Some(Token{ idx, ..}) => return Err(ParseError{ ty: ParseErrorT::MissingComparator, cursor: idx/*TODO*/}),
+                    None => return Err(ParseError{ ty: ParseErrorT::EndOfTokenStream, cursor: 0/*TODO*/})
                 };
+                println!("log:comparator: {:?}", op);
+                println!("entering right side of condition");
                 let right = Self::parse_condition(iter)?;
-    
+                println!("log:right: {:?}", right);
                 match iter.next() {
-                    Some(Token { ty: TokenT::CloseParen, ..}) => Ok(ASTNode::Condition {
-                        op,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    }),
-                    _ => {
+                    Some(Token { ty: TokenT::CloseParen, ..}) => {
+                        let cond_node = Ok(ASTNode::Condition {
+                            op,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        });
+                        println!("log:cond_node: {:?}", cond_node);
+                        return cond_node;
+                    }
+                    Some(Token{idx, ..}) => {
                         println!("here3");
-                        return Err(ParseError{ ty: ParseErrorT::UnmatchedParenthesis, cursor: 0 /*TODO!!!*/});
+                        return Err(ParseError{ ty: ParseErrorT::UnmatchedParenthesis, cursor: idx /*TODO!!!*/});
+                    }
+                    None => {
+                        return Err(ParseError{ ty: ParseErrorT::EndOfTokenStream, cursor: 0 /*TODO!!!*/});
                     }
                 }
             }
@@ -268,7 +289,7 @@ impl MonGod {
     }
     
     fn parse_logical_op<I>(
-        iter: &mut Peekable<I>,
+        iter: &mut PeekNth<I>,
     ) -> Result<ASTNode, ParseError>
     where
         I: Iterator<Item = Token>,
@@ -280,7 +301,8 @@ impl MonGod {
     
         match iter.next() {
             Some(Token {ty: TokenT::OpenParen, idx}) => {}
-            _ => return Err(ParseError {ty: ParseErrorT::MissingOpenParen, cursor: 0/*TODO*/}),
+            Some(Token { idx, ..}) => return Err(ParseError {ty: ParseErrorT::MissingOpenParen, cursor: idx/*TODO*/}),
+            None => return Err(ParseError {ty: ParseErrorT::EndOfTokenStream, cursor: 0/*TODO*/}),
         }
         let mut conditions = Vec::new();
 
@@ -288,28 +310,38 @@ impl MonGod {
             let condition = Self::parse_condition(iter)?;
             conditions.push(Box::new(condition));
             println!("{:?}", conditions);
+            println!("{:?}", iter.peek());
             match iter.peek() {
                 Some(Token{ ty: TokenT::CloseParen, ..}) => {
-                    // iter.next();
+                    iter.next();
                     break;
                 }
                 Some(Token{ ty: TokenT::OpenParen, ..}) => {
+                    println!("{:?}", iter.peek_nth(1));
+                    if let Some(Token { ty: TokenT::ConditionalOperator(_), .. }) = iter.peek_nth(1) {
+                        iter.next();
+                    }
                     continue;
                 }
-                _ => {
+                Some(Token { idx, ..}) => {
                     println!("here5");
-                    return Err(ParseError {ty: ParseErrorT::Unexpected, cursor: 0 /*TODO:handle index of this properly*/});
+                    return Err(ParseError {ty: ParseErrorT::Unexpected, cursor: *idx /*TODO:handle index of this properly*/});
+                }
+                None => {
+                    return Err(ParseError {ty: ParseErrorT::EndOfTokenStream, cursor: 0 /*TODO:handle index of this properly*/});
                 }
             }
         }
-        Ok(ASTNode::ConditionalOperator {
+        let ret_node = ASTNode::ConditionalOperator {
             op,
             conditions,
-        })
+        };
+        println!("{:?}", ret_node);
+        Ok(ret_node)
     }    
 
     fn parse_match<I>(
-        iter: &mut Peekable<I>,
+        iter: &mut PeekNth<I>,
     ) -> Result<ASTNode, ParseError>
     where
         I: Iterator<Item = Token>,
@@ -328,23 +360,24 @@ impl MonGod {
                         iter.next();
                         Ok(ASTNode::Match(Box::new(condition_chain)))
                     }
-                    _ => {
+                    Some(Token {idx, ..}) => {
                         println!("here4");
-                        return Err(ParseError{ ty: ParseErrorT::UnmatchedParenthesis, cursor: 0/*TODO*/});
+                        return Err(ParseError{ ty: ParseErrorT::UnmatchedParenthesis, cursor: *idx/*TODO*/});
                     }
+                    None => {return Err(ParseError{ ty: ParseErrorT::EndOfTokenStream, cursor: 0/*TODO*/});}
                 }
             }
-            _ => {
+            Some(Token {idx, ..}) => {
                 println!("here2");
-                return Err(ParseError{ ty: ParseErrorT::Unexpected, cursor: 0/*0*/});
+                return Err(ParseError{ ty: ParseErrorT::Unexpected, cursor: idx/*0*/});
             }
+            None => {return Err(ParseError{ ty: ParseErrorT::EndOfTokenStream, cursor: 0/*TODO*/});}
         }
     }
     
-
     pub fn parse_tokens(&mut self, tokens: &Vec<Token>) -> Result<(), ParseError>{
         let mut nodes = Vec::new();
-        let mut iter = tokens.iter().cloned().peekable();
+        let mut iter = peek_nth(tokens.iter().cloned());
         while let Some(t) = iter.peek() {
             match t.ty {
                 TokenT::Match => {

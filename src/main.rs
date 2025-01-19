@@ -35,7 +35,7 @@ fn main() {
     let s = String::from("match(|((branch == ECE)(&((branch == CSE)(branch == AIML))))");
     let mut m = MonGod::new(s.clone());
     match m.build() {
-        Ok(_) => println!("AST: {:?}", m.ast),
+        Ok(_) => println!("\n\nAST: {:?}", m.ast),
         Err(e) => println!("{}", fmt_err(&s, e))
     };
     // let mql = m.ast2mql();
